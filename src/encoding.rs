@@ -10,6 +10,31 @@ pub fn hex_to_bytes(hex: &str) -> Vec<u32> {
         .collect()
 }
 
+pub fn bytes_to_hex(bytes: Vec<char>) -> String {
+    let ranges: Vec<Vec<u8>> = vec![
+        (b'0'..=b'9').collect(),
+        (b'a'..=b'f').collect()
+    ];
+
+    let char_table: Vec<char> = ranges
+        .iter()
+        .flatten()
+        .map(|x| *x as char)
+        .collect();
+
+    let mut result: Vec<char> = Vec::new();
+
+    for byte in bytes {
+        let upper = (byte as u8 & 0xF0) >> 4;
+        let lower = byte as u8 & 0x0F;
+
+        result.push(char_table[upper as usize]);
+        result.push(char_table[lower as usize]);
+    }
+
+    result.iter().collect()
+}
+
 pub fn bytes_to_base64(bytes: Vec<u32>) -> String {
     let vals: Vec<u32> = bytes
         .chunks(3)
