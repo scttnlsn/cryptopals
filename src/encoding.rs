@@ -31,6 +31,11 @@ impl ByteArray {
         Some(ByteArray::from_bytes(bytes))
     }
 
+    pub fn from_string(s: &str) -> ByteArray {
+        let bytes = s.chars().map(|c| c as u32).collect();
+        ByteArray::from_bytes(bytes)
+    }
+
     pub fn len(&self) -> usize {
         return self.bytes.len();
     }
