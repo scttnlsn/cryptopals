@@ -144,8 +144,7 @@ pub fn find_key_of_size(ciphertext: &str, keysize: u32) -> ByteArray {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::Read;
+    use std::fs;
 
     #[test]
     fn test_find_key() {
@@ -165,10 +164,7 @@ mod tests {
 
     #[test]
     fn test_detect_single_character() {
-        let mut file = File::open("data/4.txt").unwrap();
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-
+        let contents = fs::read_to_string("data/4.txt").unwrap();
         let encrypted: Vec<ByteArray> = contents.split("\n").map(|line| {
             ByteArray::from_hex(line).unwrap()
         }).collect();
@@ -184,10 +180,7 @@ mod tests {
 
     #[test]
     fn test_break_repeating_key_xor() {
-        let mut file = File::open("data/6.txt").unwrap();
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-
+        let contents = fs::read_to_string("data/6.txt").unwrap();
         let encrypted = ByteArray::from_base64(&contents.replace("\n", "")).unwrap();
         let ciphertext = encrypted.string();
         let size = keysize(&ciphertext);

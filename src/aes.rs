@@ -16,15 +16,11 @@ fn decrypt(encrypted: &ByteArray, key: &str) -> Result<Vec<u8>, openssl::error::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::Read;
+    use std::fs;
 
     #[test]
     fn test_decrypt() {
-        let mut file = File::open("data/7.txt").unwrap();
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).unwrap();
-
+        let contents = fs::read_to_string("data/7.txt").unwrap();
         let encrypted = ByteArray::from_base64(&contents.replace("\n", "")).unwrap();
         let key = "YELLOW SUBMARINE";
 
@@ -32,5 +28,19 @@ mod tests {
         let decrypted = str::from_utf8(&bytes).unwrap();
 
         assert!(decrypted.contains("VIP. Vanilla Ice yep, yep, I'm comin' hard like a rhino"))
+    }
+
+    #[test]
+    fn test_detect_aes() {
+        let contents = fs::read_to_string("data/8.txt").unwrap();
+
+        let aes_encrypted: Vec<ByteArray> = contents.split("\n").filter_map(|line| {
+            let encrypted = ByteArray::from_hex(line).unwrap();
+            decrypt(&encrypted, "YELLOW SUBMARINE").ok()
+        }).map(|bytes| {
+            ByteArray::from_bytes(bytes)
+        }).collect();
+
+        assert_eq!(aes_encrypted.len(), 1);
     }
 }
