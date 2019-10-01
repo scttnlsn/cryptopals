@@ -1,10 +1,10 @@
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ByteArray {
-    bytes: Vec<u32>
+    pub bytes: Vec<u8>
 }
 
 impl ByteArray {
-    pub fn from_bytes(bytes: Vec<u32>) -> ByteArray {
+    pub fn from_bytes(bytes: Vec<u8>) -> ByteArray {
         ByteArray { bytes: bytes }
     }
 
@@ -18,9 +18,9 @@ impl ByteArray {
             return None;
         }
 
-        let chars: Vec<u32> = maybe_chars
+        let chars: Vec<u8> = maybe_chars
             .iter()
-            .map(|c| c.unwrap())
+            .map(|c| c.unwrap() as u8)
             .collect();
 
         let bytes = chars
@@ -31,8 +31,13 @@ impl ByteArray {
         Some(ByteArray::from_bytes(bytes))
     }
 
+    pub fn from_base64(s: &str) -> Result<ByteArray, base64::DecodeError> {
+        let bytes = base64::decode(s)?;
+        Ok(ByteArray::from_bytes(bytes.iter().map(|&x| x as u8).collect()))
+    }
+
     pub fn from_string(s: &str) -> ByteArray {
-        let bytes = s.chars().map(|c| c as u32).collect();
+        let bytes = s.chars().map(|c| c as u8).collect();
         ByteArray::from_bytes(bytes)
     }
 
@@ -65,15 +70,16 @@ impl ByteArray {
 
     pub fn base64(&self) -> String {
         let char_table: Vec<u8> = vec![
-            (b'A'..=b'Z').collect(),
-            (b'a'..=b'z').collect(),
-            (b'0'..=b'9').collect(),
-            vec![b'+', b'/']
+            (b'A'..=b'Z'),
+            (b'a'..=b'z'),
+            (b'0'..=b'9'),
+            (b'+'..=b'+'),
+            (b'/'..=b'/'),
         ].into_iter().flatten().collect();
 
         let triplets: Vec<u32> = self.bytes
             .chunks(3)
-            .map(|bytes| (bytes[0] << 16) | (bytes[1] << 8) | bytes[2])
+            .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
             .collect();
 
         let mut result: Vec<char> = Vec::new();
@@ -94,13 +100,22 @@ impl ByteArray {
     }
 
     pub fn xor(&self, other: &ByteArray) -> ByteArray {
-        let mut xored: Vec<u32> = Vec::new();
+        let bytes = self.bytes.iter().zip(other.bytes.iter()).map(|(a, b)| a ^ b).collect();
+        ByteArray { bytes: bytes }
+    }
 
-        for (b1, b2) in self.bytes.iter().zip(other.bytes.iter()) {
-            xored.push(b1 ^ b2);
+    pub fn hamming_distance(&self, other: &ByteArray) -> u32 {
+        let mut count = 0;
+
+        for byte in self.xor(other).bytes {
+            for i in 0..8 {
+                if ((byte >> i) & 0x1) > 0 {
+                    count += 1;
+                }
+            }
         }
 
-        ByteArray { bytes: xored }
+        count
     }
 }
 
@@ -131,5 +146,13 @@ mod tests {
         let b = ByteArray::from_hex("686974207468652062756c6c277320657965").unwrap();
         let xored = a.xor(&b).hex();
         assert_eq!(xored, "746865206b696420646f6e277420706c6179");
+    }
+
+    #[test]
+    fn test_hamming_distance() {
+        let a = ByteArray::from_string("this is a test");
+        let b = ByteArray::from_string("wokka wokka!!!");
+        let result = a.hamming_distance(&b);
+        assert_eq!(result, 37);
     }
 }
