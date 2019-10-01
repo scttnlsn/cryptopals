@@ -8,4 +8,5 @@ edition = "2018"
 
 [dependencies]
 base64 = "0.10.1"
+openssl = "0.10.24"
 regex = "1"

@@ -53,22 +53,18 @@ fn english_score(s: &str) -> f64 {
 }
 
 pub fn find_key(encrypted: &ByteArray) -> Score {
-    let mut scores: Vec<Score> = Vec::new();
-
-    for b in 0..=255 {
+    let mut scores: Vec<Score> = (0..=255).map(|b| {
         let key = ByteArray::from_bytes(vec![b as u8; encrypted.len()]);
         let decrypted = encrypted.xor(&key);
         let score = english_score(&decrypted.string());
 
-        let score = Score {
+        Score {
             encrypted: encrypted,
             key: key,
             decrypted: decrypted,
             score: score
-        };
-
-        scores.push(score);
-    }
+        }
+    }).collect();
 
     scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     scores[0].clone()
