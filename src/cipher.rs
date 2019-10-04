@@ -134,7 +134,7 @@ pub fn find_key_of_size(ciphertext: &str, keysize: u32) -> ByteArray {
         let transposed_byte_array = ByteArray::from_string(&transposed_string);
 
         let score = find_key(&transposed_byte_array);
-        key.push(score.key.bytes[0])
+        key.push(score.key.bytes()[0])
     }
 
     let n = key.len() * blocks.len();
@@ -142,8 +142,8 @@ pub fn find_key_of_size(ciphertext: &str, keysize: u32) -> ByteArray {
 }
 
 fn pkcs7(byte_array: &ByteArray, n: usize, pad: u8) -> ByteArray {
-    let mut padding = vec![pad; n - byte_array.bytes.len()];
-    let mut bytes = byte_array.bytes.clone();
+    let mut padding = vec![pad; n - byte_array.bytes().len()];
+    let mut bytes = byte_array.bytes().clone();
     bytes.append(&mut padding);
     ByteArray::from_bytes(bytes)
 }

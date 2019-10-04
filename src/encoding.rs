@@ -1,11 +1,21 @@
-#[derive(Debug, Clone)]
-pub struct ByteArray {
-    pub bytes: Vec<u8>
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct ByteArray(Vec<u8>);
+
+impl Into<Vec<u8>> for ByteArray {
+    fn into(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl From<Vec<u8>> for ByteArray {
+    fn from(bytes: Vec<u8>) -> Self {
+        ByteArray(bytes)
+    }
 }
 
 impl ByteArray {
     pub fn from_bytes(bytes: Vec<u8>) -> ByteArray {
-        ByteArray { bytes: bytes }
+        ByteArray(bytes)
     }
 
     pub fn from_hex(hex: &str) -> Option<ByteArray> {
@@ -42,11 +52,16 @@ impl ByteArray {
     }
 
     pub fn len(&self) -> usize {
-        return self.bytes.len();
+        return self.bytes().len();
+    }
+
+    pub fn bytes(&self) -> Vec<u8> {
+        let Self(bytes) = &*self;
+        bytes.to_vec()
     }
 
     pub fn string(&self) -> String {
-        self.bytes.iter().map(|x| *x as u8 as char).collect()
+        self.bytes().iter().map(|x| *x as u8 as char).collect()
     }
 
     pub fn hex(&self) -> String {
@@ -57,7 +72,7 @@ impl ByteArray {
 
         let mut result: Vec<char> = Vec::new();
 
-        for byte in &self.bytes {
+        for byte in &self.bytes() {
             let upper = (((*byte as u8 & 0xF0)) >> 4) as usize;
             let lower = (*byte as u8 & 0x0F) as usize;
 
@@ -77,7 +92,7 @@ impl ByteArray {
             (b'/'..=b'/'),
         ].into_iter().flatten().collect();
 
-        let triplets: Vec<u32> = self.bytes
+        let triplets: Vec<u32> = self.bytes()
             .chunks(3)
             .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
             .collect();
@@ -100,14 +115,14 @@ impl ByteArray {
     }
 
     pub fn xor(&self, other: &ByteArray) -> ByteArray {
-        let bytes = self.bytes.iter().zip(other.bytes.iter()).map(|(a, b)| a ^ b).collect();
-        ByteArray { bytes: bytes }
+        let bytes = self.bytes().iter().zip(other.bytes().iter()).map(|(a, b)| a ^ b).collect();
+        ByteArray(bytes)
     }
 
     pub fn hamming_distance(&self, other: &ByteArray) -> u32 {
         let mut count = 0;
 
-        for byte in self.xor(other).bytes {
+        for byte in self.xor(other).bytes() {
             for i in 0..8 {
                 if ((byte >> i) & 0x1) > 0 {
                     count += 1;
