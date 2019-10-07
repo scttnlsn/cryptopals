@@ -141,8 +141,9 @@ pub fn find_key_of_size(ciphertext: &str, keysize: u32) -> ByteArray {
     ByteArray::from_bytes(key.into_iter().cycle().take(n).collect())
 }
 
-fn pkcs7(byte_array: &ByteArray, n: usize, pad: u8) -> ByteArray {
-    let mut padding = vec![pad; n - byte_array.bytes().len()];
+pub fn pkcs7(byte_array: &ByteArray, n: usize, pad: u8) -> ByteArray {
+    let len = byte_array.bytes().len();
+    let mut padding = vec![pad; n - (len % n)];
     let mut bytes = byte_array.bytes().clone();
     bytes.append(&mut padding);
     ByteArray::from_bytes(bytes)
