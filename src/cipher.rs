@@ -141,14 +141,6 @@ pub fn find_key_of_size(ciphertext: &str, keysize: u32) -> ByteArray {
     ByteArray::from_bytes(key.into_iter().cycle().take(n).collect())
 }
 
-pub fn pkcs7(byte_array: &ByteArray, n: usize, pad: u8) -> ByteArray {
-    let len = byte_array.bytes().len();
-    let mut padding = vec![pad; n - (len % n)];
-    let mut bytes = byte_array.bytes().clone();
-    bytes.append(&mut padding);
-    ByteArray::from_bytes(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,12 +189,5 @@ mod tests {
         let key = find_key_of_size(&ciphertext, size);
         let decrypted = encrypt(&ciphertext, &key.string());
         assert!(decrypted.string().contains("VIP. Vanilla Ice yep, yep, I'm comin' hard like a rhino"))
-    }
-
-    #[test]
-    fn test_pkcs7() {
-        let s = ByteArray::from_string("YELLOW SUBMARINE");
-        let res = pkcs7(&s, 20, 0x04);
-        assert_eq!(res.string(), "YELLOW SUBMARINE\x04\x04\x04\x04");
     }
 }

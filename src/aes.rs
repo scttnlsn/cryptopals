@@ -1,4 +1,3 @@
-use crate::cipher;
 use crate::encoding::{ByteArray};
 use itertools::Itertools;
 use openssl::error::{ErrorStack};
@@ -7,36 +6,59 @@ use openssl::symm::{Mode, Crypter};
 use rand;
 use rand::Rng;
 
+const BLOCKSIZE: u8 = 16;
+
 #[derive(Debug, Clone, PartialEq)]
 enum EncType {
     ECB,
     CBC,
 }
 
-fn ecb_cipher(mode: Mode, key: &[u8], data: &[u8], pad: bool) -> Result<Vec<u8>, ErrorStack> {
+pub fn pkcs7_pad(byte_array: &ByteArray, blocksize: u8) -> ByteArray {
+    let len = blocksize as usize - (byte_array.bytes().len() % blocksize as usize);
+    let mut padding = vec![len as u8; len];
+    let mut bytes = byte_array.bytes().clone();
+    bytes.append(&mut padding);
+    ByteArray::from_bytes(bytes)
+}
+
+pub fn pkcs7_unpad(byte_array: &ByteArray) -> ByteArray {
+    let bytes = byte_array.bytes();
+
+    match bytes.last() {
+        Some(padding_len) => {
+            ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec())
+        },
+        None => {
+            ByteArray::from_bytes(vec![])
+        }
+    }
+}
+
+fn ecb_cipher(mode: Mode, key: &[u8], data: &[u8]) -> Result<ByteArray, ErrorStack> {
     let ecb = symm::Cipher::aes_128_ecb();
 
     let mut crypter = Crypter::new(ecb, mode, key, None)?;
-    crypter.pad(pad);
+    crypter.pad(false);
 
     let mut out = vec![0; data.len() + ecb.block_size()];
     let count = crypter.update(data, &mut out)?;
     let rest = crypter.finalize(&mut out[count..])?;
 
     out.truncate(count + rest);
-    Ok(out)
+    Ok(ByteArray::from_bytes(out))
 }
 
-fn decrypt_ecb(data: &ByteArray, key: &[u8], pad: bool) -> Result<ByteArray, ErrorStack> {
-    ecb_cipher(Mode::Decrypt, key, &data.bytes(), pad).and_then(|bytes| {
-        Ok(ByteArray::from_bytes(bytes))
-    })
+fn encrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+    let padded = pkcs7_pad(data, BLOCKSIZE);
+    let bytes = ecb_cipher(Mode::Encrypt, key, &padded.bytes())?;
+    Ok(bytes)
 }
 
-fn encrypt_ecb(data: &ByteArray, key: &[u8], pad: bool) -> Result<ByteArray, ErrorStack> {
-    ecb_cipher(Mode::Encrypt, key, &data.bytes(), pad).and_then(|bytes| {
-        Ok(ByteArray::from_bytes(bytes))
-    })
+fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+    let bytes = ecb_cipher(Mode::Decrypt, key, &data.bytes())?;
+    let unpadded = pkcs7_unpad(&bytes);
+    Ok(unpadded)
 }
 
 fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
@@ -44,7 +66,7 @@ fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray,
     let mut output: Vec<u8> = Vec::new();
 
     for block in data.bytes().chunks(16).map(|bytes| ByteArray::from_bytes(bytes.to_vec())) {
-        match decrypt_ecb(&block, key, false) {
+        match ecb_cipher(Mode::Decrypt, key, &block.bytes()) {
             Ok(res) => {
                 output.append(&mut res.xor(&iv).bytes());
                 iv = block;
@@ -61,7 +83,7 @@ fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray,
     let mut output: Vec<u8> = Vec::new();
 
     for block in data.bytes().chunks(16).map(|bytes| ByteArray::from_bytes(bytes.to_vec())) {
-        match encrypt_ecb(&block.xor(&iv), key, false) {
+        match ecb_cipher(Mode::Encrypt, key, &block.xor(&iv).bytes()) {
             Ok(res) => {
                 output.append(&mut res.bytes());
                 iv = res;
@@ -88,12 +110,12 @@ fn random_encrypt(data: &ByteArray) -> Result<ByteArray, ErrorStack> {
     input.append(&mut suffix);
 
     let decrypted = ByteArray::from_bytes(input);
-    let padded = cipher::pkcs7(&decrypted, 16, 0);
+    let padded = pkcs7_pad(&decrypted, 16);
     let key = random_bytes(16);
 
     if rand::random() {
         // ECB
-        encrypt_ecb(&padded, &key, false)
+        encrypt_ecb(&padded, &key)
     } else {
         // CBC
         let iv = ByteArray::from_bytes(random_bytes(16));
@@ -132,11 +154,25 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn test_pkcs7_pad() {
+        let s = ByteArray::from_string("YELLOW SUB");
+        let res = pkcs7_pad(&s, 16);
+        assert_eq!(res.string(), "YELLOW SUB\x06\x06\x06\x06\x06\x06");
+    }
+
+    #[test]
+    fn test_pkcs7_unpad() {
+        let s = ByteArray::from_string("YELLOW SUB\x06\x06\x06\x06\x06\x06");
+        let res = pkcs7_unpad(&s);
+        assert_eq!(res.string(), "YELLOW SUB");
+    }
+
+    #[test]
     fn test_decrypt() {
         let contents = fs::read_to_string("data/7.txt").unwrap();
         let encrypted = ByteArray::from_base64(&contents.replace("\n", "")).unwrap();
         let key = "YELLOW SUBMARINE".as_bytes();
-        let decrypted = decrypt_ecb(&encrypted, key, true).unwrap().string();
+        let decrypted = decrypt_ecb(&encrypted, key).unwrap().string();
 
         assert!(decrypted.contains("VIP. Vanilla Ice yep, yep, I'm comin' hard like a rhino"))
     }
@@ -145,8 +181,8 @@ mod tests {
     fn test_encrypt_decrypt() {
         let key = "YELLOW SUBMARINE".as_bytes();
         let data = ByteArray::from_string("foobar");
-        let encrypted = encrypt_ecb(&data, key, true).unwrap();
-        let decrypted = decrypt_ecb(&encrypted, key, true).unwrap().string();
+        let encrypted = encrypt_ecb(&data, key).unwrap();
+        let decrypted = decrypt_ecb(&encrypted, key).unwrap().string();
 
         assert_eq!(decrypted, "foobar");
     }
@@ -194,7 +230,7 @@ mod tests {
     fn test_random_encrypt() {
         let data = ByteArray::from_string("YELLOW SUBMARINE");
         let result = random_encrypt(&data).unwrap();
-        assert_eq!(result.bytes().len(), 32);
+        assert_eq!(result.bytes().len() % 16, 0);
     }
 
     #[test]
@@ -202,7 +238,7 @@ mod tests {
         let data = ByteArray::from_string("YELLOW SUBMARINEYELLOW SUBMARINE");
         let key = "YELLOW SUBMARINE".as_bytes();
 
-        let ecb = encrypt_ecb(&data, key, false).unwrap();
+        let ecb = encrypt_ecb(&data, key).unwrap();
         assert_eq!(detection_oracle(&ecb), EncType::ECB);
 
         let iv = ByteArray::from_bytes(random_bytes(16));
