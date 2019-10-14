@@ -49,19 +49,19 @@ fn ecb_cipher(mode: Mode, key: &[u8], data: &[u8]) -> Result<ByteArray, ErrorSta
     Ok(ByteArray::from_bytes(out))
 }
 
-fn encrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+pub fn encrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
     let padded = pkcs7_pad(data, BLOCKSIZE);
     let bytes = ecb_cipher(Mode::Encrypt, key, &padded.bytes())?;
     Ok(bytes)
 }
 
-fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+pub fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
     let bytes = ecb_cipher(Mode::Decrypt, key, &data.bytes())?;
     let unpadded = pkcs7_unpad(&bytes);
     Ok(unpadded)
 }
 
-fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
+pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
     let mut iv = iv;
     let mut output: Vec<u8> = Vec::new();
 
@@ -78,7 +78,7 @@ fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray,
     Ok(ByteArray::from_bytes(output))
 }
 
-fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
+pub fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
     let mut iv = iv;
     let mut output: Vec<u8> = Vec::new();
 
@@ -95,8 +95,12 @@ fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray,
     Ok(ByteArray::from_bytes(output))
 }
 
-fn random_bytes(n: u32) -> Vec<u8> {
+pub fn random_bytes(n: u32) -> Vec<u8> {
     (0..n).map(|_| rand::random::<u8>()).collect()
+}
+
+pub fn random_key() -> Vec<u8> {
+    random_bytes(BLOCKSIZE as u32)
 }
 
 fn random_encrypt(data: &ByteArray) -> Result<ByteArray, ErrorStack> {
@@ -111,14 +115,14 @@ fn random_encrypt(data: &ByteArray) -> Result<ByteArray, ErrorStack> {
 
     let decrypted = ByteArray::from_bytes(input);
     let padded = pkcs7_pad(&decrypted, BLOCKSIZE);
-    let key = random_bytes(BLOCKSIZE as u32);
+    let key = random_key();
 
     if rand::random() {
         // ECB
         encrypt_ecb(&padded, &key)
     } else {
         // CBC
-        let iv = ByteArray::from_bytes(random_bytes(BLOCKSIZE as u32));
+        let iv = ByteArray::from_bytes(random_key());
         encrypt_cbc(&padded, &key, iv)
     }
 }
@@ -163,7 +167,7 @@ fn prefix_encrypt_ecb(input: &ByteArray, data: &ByteArray, key: &[u8]) -> Result
 }
 
 fn detect_blocksize(data: &ByteArray) -> Option<usize> {
-    let key = random_bytes(BLOCKSIZE as u32);
+    let key = random_key();
     let enc = |input: &ByteArray| {
         prefix_encrypt_ecb(input, data, &key)
     };
@@ -183,8 +187,8 @@ fn detect_blocksize(data: &ByteArray) -> Option<usize> {
     None
 }
 
-fn crack_ecb(data: &ByteArray) -> ByteArray {
-    let key = random_bytes(BLOCKSIZE as u32);
+pub fn crack_ecb(data: &ByteArray) -> ByteArray {
+    let key = random_key();
 
     let oracle = |input: &ByteArray, offset: usize| {
         let bytes = data.bytes();
@@ -207,7 +211,7 @@ fn crack_ecb(data: &ByteArray) -> ByteArray {
             let prefix = ByteArray::from_bytes(prefix_bytes);
             let result = oracle(&prefix, i).unwrap().bytes();
 
-            if result[0..16] == target[0..16] {
+            if result[0..(BLOCKSIZE as usize)] == target[0..(BLOCKSIZE as usize)] {
                 decrypted.push(b);
             }
         }
@@ -309,7 +313,7 @@ mod tests {
         let ecb = encrypt_ecb(&data, key).unwrap();
         assert_eq!(detection_oracle(&ecb), EncType::ECB);
 
-        let iv = ByteArray::from_bytes(random_bytes(BLOCKSIZE as u32));
+        let iv = ByteArray::from_bytes(random_key());
         let cbc = encrypt_cbc(&data, key, iv).unwrap();
         assert_eq!(detection_oracle(&cbc), EncType::CBC);
     }
