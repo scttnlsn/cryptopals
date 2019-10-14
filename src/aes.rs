@@ -110,35 +110,36 @@ fn random_encrypt(data: &ByteArray) -> Result<ByteArray, ErrorStack> {
     input.append(&mut suffix);
 
     let decrypted = ByteArray::from_bytes(input);
-    let padded = pkcs7_pad(&decrypted, 16);
-    let key = random_bytes(16);
+    let padded = pkcs7_pad(&decrypted, BLOCKSIZE);
+    let key = random_bytes(BLOCKSIZE as u32);
 
     if rand::random() {
         // ECB
         encrypt_ecb(&padded, &key)
     } else {
         // CBC
-        let iv = ByteArray::from_bytes(random_bytes(16));
+        let iv = ByteArray::from_bytes(random_bytes(BLOCKSIZE as u32));
         encrypt_cbc(&padded, &key, iv)
     }
 }
 
 fn unique_blocks(data: &ByteArray) -> usize {
     let bytes = data.bytes();
-    let blocks = bytes.chunks(16);
+    let blocks = bytes.chunks(BLOCKSIZE as usize);
     let uniques: usize = blocks.unique().collect::<Vec<_>>().len();
     uniques
 }
 
 fn detection_oracle(data: &ByteArray) -> EncType {
     let bytes = data.bytes();
-    let num_blocks = (data.len() / 16) as u32;
+    let num_blocks = (data.len() / BLOCKSIZE as usize) as u32;
 
-    for offset in 0..16 {
+    for offset in 0..(BLOCKSIZE as usize) {
         let window = &bytes[offset..];
         let candidate = ByteArray::from_bytes(window.to_vec());
-        let uniques = unique_blocks(&candidate) as u32;
-        let duplicates = num_blocks - uniques;
+        let uniques = unique_blocks(&candidate) as i32;
+
+        let duplicates = num_blocks as i32 - uniques;
 
         if duplicates > 0 {
             return EncType::ECB;
@@ -146,6 +147,73 @@ fn detection_oracle(data: &ByteArray) -> EncType {
     }
 
     EncType::CBC
+}
+
+fn prefix(prefix: &ByteArray, data: &ByteArray) -> ByteArray {
+    let mut plaintext = prefix.bytes();
+    let mut suffix = data.bytes();
+    plaintext.append(&mut suffix);
+
+    ByteArray::from_bytes(plaintext)
+}
+
+fn prefix_encrypt_ecb(input: &ByteArray, data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+    let prefixed = prefix(input, data);
+    encrypt_ecb(&prefixed, key)
+}
+
+fn detect_blocksize(data: &ByteArray) -> Option<usize> {
+    let key = random_bytes(BLOCKSIZE as u32);
+    let enc = |input: &ByteArray| {
+        prefix_encrypt_ecb(input, data, &key)
+    };
+
+    for i in 1..20 {
+        let bytes_cur = ByteArray::from_bytes(vec![b'A'; i]);
+        let output_cur = enc(&bytes_cur).unwrap().bytes();
+
+        let bytes_next = ByteArray::from_bytes(vec![b'A'; i + 1]);
+        let output_next = enc(&bytes_next).unwrap().bytes();
+
+        if &output_cur[0..i] == &output_next[0..i] {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
+fn crack_ecb(data: &ByteArray) -> ByteArray {
+    let key = random_bytes(BLOCKSIZE as u32);
+
+    let oracle = |input: &ByteArray, offset: usize| {
+        let bytes = data.bytes();
+        let offset_bytes = bytes[offset..].to_vec();
+        let offset_data = ByteArray::from_bytes(offset_bytes);
+        prefix_encrypt_ecb(input, &offset_data, &key)
+    };
+
+    let prefix = ByteArray::from_bytes(vec![b'A'; BLOCKSIZE as usize - 1]);
+
+    let mut decrypted: Vec<u8> = Vec::new();
+
+    for i in 0..(data.bytes().len()) {
+        let target = oracle(&prefix, i).unwrap().bytes();
+
+        for b in 0..=255 {
+            let mut prefix_bytes = prefix.bytes();
+            prefix_bytes.push(b);
+
+            let prefix = ByteArray::from_bytes(prefix_bytes);
+            let result = oracle(&prefix, i).unwrap().bytes();
+
+            if result[0..16] == target[0..16] {
+                decrypted.push(b);
+            }
+        }
+    }
+
+    ByteArray::from_bytes(decrypted)
 }
 
 #[cfg(test)]
@@ -241,8 +309,26 @@ mod tests {
         let ecb = encrypt_ecb(&data, key).unwrap();
         assert_eq!(detection_oracle(&ecb), EncType::ECB);
 
-        let iv = ByteArray::from_bytes(random_bytes(16));
+        let iv = ByteArray::from_bytes(random_bytes(BLOCKSIZE as u32));
         let cbc = encrypt_cbc(&data, key, iv).unwrap();
         assert_eq!(detection_oracle(&cbc), EncType::CBC);
+    }
+
+    #[test]
+    fn test_detect_blocksize() {
+        let data = ByteArray::from_base64("Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK").unwrap();
+        let blocksize = detect_blocksize(&data);
+        assert_eq!(blocksize, Some(BLOCKSIZE as usize));
+    }
+
+    #[test]
+    fn test_crack_ecb() {
+        let data = ByteArray::from_base64("Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK").unwrap();
+        let decrypted = crack_ecb(&data).string();
+
+        assert!(decrypted.contains("Rollin' in my 5.0"));
+        assert!(decrypted.contains("With my rag-top down so my hair can blow"));
+        assert!(decrypted.contains("The girlies on standby waving just to say hi"));
+        assert!(decrypted.contains("Did you stop? No, I just drove by"));
     }
 }
