@@ -115,10 +115,16 @@ impl CBC {
 
     pub fn decrypt(&self, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack> {
         let data = decrypt_cbc(&ciphertext, &self.key, ByteArray::from_bytes(self.iv.to_vec()))?;
+
         match pkcs7_unpad(&data) {
             Some(unpadded) => Ok(unpadded),
             None => Ok(data),
         }
+    }
+
+    pub fn check_padding(&self, ciphertext: &ByteArray) -> Result<bool, ErrorStack> {
+        let data = decrypt_cbc(&ciphertext, &self.key, ByteArray::from_bytes(self.iv.to_vec()))?;
+        Ok(pkcs7_unpad(&data).is_some())
     }
 }
 
@@ -182,7 +188,7 @@ fn detection_oracle(data: &ByteArray) -> EncType {
 
 #[derive(Debug)]
 pub struct Oracle<'a> {
-    pub data: &'a ByteArray,
+    data: &'a ByteArray,
     key: Vec<u8>,
     prefix: ByteArray,
 }
@@ -295,8 +301,62 @@ pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, ErrorStack> {
             if result[target_start..target_end] == target[target_start..target_end] {
                 decrypted.push(b);
                 break;
+             }
+        }
+    }
+
+    Ok(ByteArray::from_bytes(decrypted))
+}
+
+fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack> {
+    let mut decrypted: Vec<u8> = Vec::new();
+
+    let bytes = ciphertext.bytes();
+    let blocks: Vec<&[u8]> = bytes.chunks(BLOCKSIZE).collect();
+
+    for blocks in blocks.windows(2) {
+        let mut decrypted_block: Vec<u8> = Vec::new();
+
+        let c1 = blocks[0].to_vec();
+        let c2 = blocks[1].to_vec();
+
+        let mut bytes = c1.to_vec();
+        bytes.extend(c2.to_vec());
+        let valid_padding = cbc.check_padding(&ByteArray::from_bytes(bytes))?;
+
+        // c2 must be the last block since it has valid padding w/o modification
+        let last_block = valid_padding;
+
+        if last_block {
+            // TODO: not sure how to handle this yet
+            break;
+        }
+
+        for n in 1..=(BLOCKSIZE) {
+            for i in 0..=255 {
+                let mut pad_bytes = vec![0 as u8; BLOCKSIZE - n];
+                pad_bytes.extend(vec![n as u8; n]);
+                let pad_mask = ByteArray::from_bytes(pad_bytes);
+
+                let mut val_bytes = vec![0 as u8; BLOCKSIZE - n];
+                val_bytes.push(i);
+                val_bytes.extend(decrypted_block.to_vec());
+                let val_mask = ByteArray::from_bytes(val_bytes);
+
+                let c1_masked = ByteArray::from_bytes(c1.to_vec()).xor(&pad_mask).xor(&val_mask);
+
+                let mut bytes = c1_masked.bytes();
+                bytes.extend(c2.to_vec());
+
+                let valid_padding = cbc.check_padding(&ByteArray::from_bytes(bytes))?;
+                if valid_padding {
+                    decrypted_block.insert(0, i);
+                    break;
+                }
             }
         }
+
+        decrypted.extend(decrypted_block);
     }
 
     Ok(ByteArray::from_bytes(decrypted))
@@ -359,6 +419,14 @@ mod tests {
         let s = ByteArray::from_string("YELLOW SUB\x06\x06\x06\x06\x06\x05");
         let res = pkcs7_unpad(&s);
         assert_eq!(res, None);
+
+        let s = ByteArray::from_string("YELLOW SUBMARIN\x02");
+        let res = pkcs7_unpad(&s);
+        assert_eq!(res, None);
+
+        let s = ByteArray::from_string("YELLOW SUBMARI\x01\x01");
+        let res = pkcs7_unpad(&s).unwrap();
+        assert_eq!(res.string(), "YELLOW SUBMARI\x01");
     }
 
     #[test]
@@ -525,5 +593,15 @@ mod tests {
 
         let res = UserData::decrypt(&ByteArray::from_bytes(bytes), &cbc).unwrap();
         assert_eq!(res.is_admin(), true);
+    }
+
+    #[test]
+    fn test_crack_cbc() {
+        let cbc = CBC::new();
+        let input = ByteArray::from_string("AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDDX");
+        let ciphertext = cbc.encrypt(&input).unwrap();
+        let plaintext = crack_cbc(&cbc, &ciphertext).unwrap().string();
+
+        println!("{:?}", plaintext);
     }
 }
