@@ -22,15 +22,20 @@ pub fn pkcs7_pad(byte_array: &ByteArray, blocksize: usize) -> ByteArray {
     ByteArray::from_bytes(bytes)
 }
 
-pub fn pkcs7_unpad(byte_array: &ByteArray) -> ByteArray {
+pub fn pkcs7_unpad(byte_array: &ByteArray) -> Option<ByteArray> {
     let bytes = byte_array.bytes();
 
     match bytes.last() {
         Some(padding_len) => {
-            ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec())
+            let padding: Vec<&u8> = bytes.iter().rev().take(*padding_len as usize).collect();
+            if !padding.iter().all(|x| *x == padding_len) {
+                return None
+            }
+
+            Some(ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec()))
         },
         None => {
-            ByteArray::from_bytes(vec![])
+            Some(ByteArray::from_bytes(vec![]))
         }
     }
 }
@@ -57,8 +62,10 @@ pub fn encrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack
 
 pub fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
     let bytes = ecb_cipher(Mode::Decrypt, key, &data.bytes())?;
-    let unpadded = pkcs7_unpad(&bytes);
-    Ok(unpadded)
+    match pkcs7_unpad(&bytes) {
+        Some(unpadded) => Ok(unpadded),
+        None => Ok(bytes),
+    }
 }
 
 pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
@@ -276,8 +283,12 @@ mod tests {
     #[test]
     fn test_pkcs7_unpad() {
         let s = ByteArray::from_string("YELLOW SUB\x06\x06\x06\x06\x06\x06");
-        let res = pkcs7_unpad(&s);
+        let res = pkcs7_unpad(&s).unwrap();
         assert_eq!(res.string(), "YELLOW SUB");
+
+        let s = ByteArray::from_string("YELLOW SUB\x06\x06\x06\x06\x06\x05");
+        let res = pkcs7_unpad(&s);
+        assert_eq!(res, None);
     }
 
     #[test]
