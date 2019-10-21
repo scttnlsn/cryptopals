@@ -73,13 +73,9 @@ pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteAr
     let mut output: Vec<u8> = Vec::new();
 
     for block in data.bytes().chunks(16).map(|bytes| ByteArray::from_bytes(bytes.to_vec())) {
-        match ecb_cipher(Mode::Decrypt, key, &block.bytes()) {
-            Ok(res) => {
-                output.append(&mut res.xor(&iv).bytes());
-                iv = block;
-            },
-            err => return err
-        }
+        let res = ecb_cipher(Mode::Decrypt, key, &block.bytes())?;
+        output.append(&mut res.xor(&iv).bytes());
+        iv = block;
     }
 
     Ok(ByteArray::from_bytes(output))
@@ -90,24 +86,48 @@ pub fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteAr
     let mut output: Vec<u8> = Vec::new();
 
     for block in data.bytes().chunks(16).map(|bytes| ByteArray::from_bytes(bytes.to_vec())) {
-        match ecb_cipher(Mode::Encrypt, key, &block.xor(&iv).bytes()) {
-            Ok(res) => {
-                output.append(&mut res.bytes());
-                iv = res;
-            },
-            err => return err
-        }
+        let res = ecb_cipher(Mode::Encrypt, key, &block.xor(&iv).bytes())?;
+        output.append(&mut res.bytes());
+        iv = res;
     }
 
     Ok(ByteArray::from_bytes(output))
 }
 
-pub fn random_bytes(n: u32) -> Vec<u8> {
+#[derive(Debug, PartialEq)]
+struct CBC {
+    key: Vec<u8>,
+    iv: Vec<u8>,
+}
+
+impl CBC {
+    pub fn new() -> Self {
+        CBC {
+            key: random_key(),
+            iv: random_bytes(BLOCKSIZE),
+        }
+    }
+
+    pub fn encrypt(&self, data: &ByteArray) -> Result<ByteArray, ErrorStack> {
+        let padded = pkcs7_pad(&data, BLOCKSIZE);
+        encrypt_cbc(&padded, &self.key, ByteArray::from_bytes(self.iv.to_vec()))
+    }
+
+    pub fn decrypt(&self, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack> {
+        let data = decrypt_cbc(&ciphertext, &self.key, ByteArray::from_bytes(self.iv.to_vec()))?;
+        match pkcs7_unpad(&data) {
+            Some(unpadded) => Ok(unpadded),
+            None => Ok(data),
+        }
+    }
+}
+
+pub fn random_bytes(n: usize) -> Vec<u8> {
     (0..n).map(|_| rand::random::<u8>()).collect()
 }
 
 pub fn random_key() -> Vec<u8> {
-    random_bytes(BLOCKSIZE as u32)
+    random_bytes(BLOCKSIZE)
 }
 
 fn random_encrypt(data: &ByteArray) -> Result<ByteArray, ErrorStack> {
@@ -168,6 +188,7 @@ fn prefix(prefix: &ByteArray, data: &ByteArray) -> ByteArray {
     ByteArray::from_bytes(plaintext)
 }
 
+#[derive(Debug)]
 pub struct Oracle<'a> {
     pub data: &'a ByteArray,
     key: Vec<u8>,
@@ -183,7 +204,7 @@ impl<'a> Oracle<'a> {
         }
     }
 
-    pub fn new_prefixed(data: &'a ByteArray, n: u32) -> Self {
+    pub fn new_prefixed(data: &'a ByteArray, n: usize) -> Self {
         Oracle {
             key: random_key(),
             data: data,
@@ -266,6 +287,42 @@ pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, ErrorStack> {
     }
 
     Ok(ByteArray::from_bytes(decrypted))
+}
+
+#[derive(Debug, PartialEq)]
+struct UserData<'a> {
+    data: String,
+    cbc: &'a CBC,
+}
+
+impl<'a> UserData<'a> {
+    pub fn new(input: &str, cbc: &'a CBC) -> Self {
+        let sanitized = input.replace("=", "").replace(";", "");
+        let data = format!("comment1=cooking%20MCs;userdata={};comment2=%20like%20a%20pound%20of%20bacon", sanitized);
+
+        UserData {
+            data: data,
+            cbc: cbc,
+        }
+    }
+
+    pub fn decrypt(ciphertext: &ByteArray, cbc: &'a CBC) -> Result<Self, ErrorStack> {
+        let data = cbc.decrypt(ciphertext)?;
+
+        Ok(UserData {
+            data: data.string(),
+            cbc: cbc,
+        })
+    }
+
+    pub fn encrypt(&self) -> Result<ByteArray, ErrorStack> {
+        let data = ByteArray::from_string(&self.data);
+        self.cbc.encrypt(&data)
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.data.contains(";admin=true;")
+    }
 }
 
 #[cfg(test)]
@@ -408,5 +465,52 @@ mod tests {
         assert!(decrypted.contains("With my rag-top down so my hair can blow"));
         assert!(decrypted.contains("The girlies on standby waving just to say hi"));
         assert!(decrypted.contains("Did you stop? No, I just drove by"));
+    }
+
+    #[test]
+    fn test_user_profile() {
+        let cbc = CBC::new();
+        let data = "foo;admin=true;";
+        let userdata = UserData::new(data, &cbc);
+
+        assert_eq!(userdata.is_admin(), false);
+
+        let ciphertext = userdata.encrypt().unwrap();
+        let userdata2 = UserData::decrypt(&ciphertext, &cbc).unwrap();
+
+        assert_eq!(userdata, userdata2)
+    }
+
+    #[test]
+    fn test_user_profile_admin() {
+        let padding = ByteArray::from_string("AAAAAAAAAAAAAAAA");
+        let data = ByteArray::from_string(";admin=true;AAAA");
+
+        // mask lines up w/ ';' and '=' bytes of data
+        let mask = ByteArray::from_bytes(vec![1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+
+        let mut bytes = padding.bytes();
+
+        // xor the data w/ mask (this will be reversed when decrypting)
+        bytes.append(&mut data.xor(&mask).bytes());
+
+        let input = ByteArray::from_bytes(bytes);
+
+        let cbc = CBC::new();
+        let userdata = UserData::new(&input.string(), &cbc);
+        assert_eq!(userdata.is_admin(), false);
+
+        let encrypted = userdata.encrypt().unwrap();
+
+        let mut bytes = encrypted.bytes();
+
+        // xor the encrypted padding block
+        // these bit changes will be present in next (data) block when decrypting
+        let block = ByteArray::from_bytes(bytes[(BLOCKSIZE * 2)..(BLOCKSIZE * 3)].to_vec());
+        let xored_block = block.xor(&mask);
+        bytes.splice((BLOCKSIZE * 2)..(BLOCKSIZE * 3), xored_block.bytes());
+
+        let res = UserData::decrypt(&ByteArray::from_bytes(bytes), &cbc).unwrap();
+        assert_eq!(res.is_admin(), true);
     }
 }
