@@ -132,6 +132,12 @@ impl ByteArray {
 
         count
     }
+
+    pub fn prefix(&self, prefix: &ByteArray) -> ByteArray {
+        let mut bytes = prefix.bytes();
+        bytes.append(&mut self.bytes());
+        ByteArray::from_bytes(bytes)
+    }
 }
 
 #[cfg(test)]

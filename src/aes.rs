@@ -180,14 +180,6 @@ fn detection_oracle(data: &ByteArray) -> EncType {
     EncType::CBC
 }
 
-fn prefix(prefix: &ByteArray, data: &ByteArray) -> ByteArray {
-    let mut plaintext = prefix.bytes();
-    let mut suffix = data.bytes();
-    plaintext.append(&mut suffix);
-
-    ByteArray::from_bytes(plaintext)
-}
-
 #[derive(Debug)]
 pub struct Oracle<'a> {
     pub data: &'a ByteArray,
@@ -212,17 +204,9 @@ impl<'a> Oracle<'a> {
         }
     }
 
-    pub fn encrypt(&self, input: &ByteArray, offset: usize) -> Result<ByteArray, ErrorStack> {
-        let bytes = self.data.bytes();
-
-        let offset_bytes = bytes[offset..].to_vec();
-        let offset_data = ByteArray::from_bytes(offset_bytes);
-
+    pub fn encrypt(&self, input: &ByteArray) -> Result<ByteArray, ErrorStack> {
         encrypt_ecb(
-            &prefix(
-                &self.prefix,
-                &prefix(input, &offset_data)
-            ),
+            &self.data.prefix(&input.prefix(&self.prefix)),
             &self.key
         )
     }
@@ -233,10 +217,10 @@ fn detect_blocksize(data: &ByteArray) -> Result<Option<usize>, ErrorStack> {
 
     for i in 1..20 {
         let bytes_cur = ByteArray::from_bytes(vec![b'A'; i]);
-        let output_cur = oracle.encrypt(&bytes_cur, 0)?.bytes();
+        let output_cur = oracle.encrypt(&bytes_cur)?.bytes();
 
         let bytes_next = ByteArray::from_bytes(vec![b'A'; i + 1]);
-        let output_next = oracle.encrypt(&bytes_next, 0)?.bytes();
+        let output_next = oracle.encrypt(&bytes_next)?.bytes();
 
         if &output_cur[0..i] == &output_next[0..i] {
             return Ok(Some(i));
@@ -246,13 +230,30 @@ fn detect_blocksize(data: &ByteArray) -> Result<Option<usize>, ErrorStack> {
     Ok(None)
 }
 
-pub fn detect_prefix_size(oracle: &Oracle) -> Result<usize, ErrorStack> {
+fn detect_data_len(oracle: &Oracle) -> Result<usize, ErrorStack> {
+    let base_length = oracle.encrypt(&ByteArray::from_bytes(vec![]))?.bytes().len();
+    let mut i = 1;
+
+    loop {
+        let input = ByteArray::from_bytes(vec![b'A'; i]);
+        let output = oracle.encrypt(&input)?;
+        let size = output.bytes().len();
+
+        if size != base_length {
+            return Ok(size - i)
+        }
+
+        i += 1;
+    }
+}
+
+pub fn detect_prefix_len(oracle: &Oracle) -> Result<usize, ErrorStack> {
     for i in 0..BLOCKSIZE {
         let input1 = ByteArray::from_bytes(vec![b'A'; i as usize]);
         let input2 = ByteArray::from_bytes(vec![b'A'; (i + 1) as usize]);
 
-        let output1 = oracle.encrypt(&input1, 0)?.bytes();
-        let output2 = oracle.encrypt(&input2, 0)?.bytes();
+        let output1 = oracle.encrypt(&input1)?.bytes();
+        let output2 = oracle.encrypt(&input2)?.bytes();
 
         if output1[0..(BLOCKSIZE as usize)] == output2[0..(BLOCKSIZE as usize)] {
             // when an extra padding byte results in the same first
@@ -265,23 +266,35 @@ pub fn detect_prefix_size(oracle: &Oracle) -> Result<usize, ErrorStack> {
 }
 
 pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, ErrorStack> {
-    let prefix_size = detect_prefix_size(&oracle)?;
-    let prefix = ByteArray::from_bytes(vec![b'A'; (BLOCKSIZE - prefix_size - 1) as usize]);
+    let data_len = detect_data_len(&oracle)?;
+    let prefix_len = detect_prefix_len(&oracle)?;
 
     let mut decrypted: Vec<u8> = Vec::new();
 
-    for i in 0..(oracle.data.bytes().len()) {
-        let target = oracle.encrypt(&prefix, i)?.bytes();
+    for _ in 0..data_len {
+        let len = decrypted.len();
+
+        // make sure that the next unknown byte is at the end of the block
+        let pad_len = (BLOCKSIZE - ((len + prefix_len + 1) % BLOCKSIZE)) % BLOCKSIZE;
+        let pad = ByteArray::from_bytes(vec![b'A'; pad_len]);
+
+        let block_num = (len + prefix_len) / BLOCKSIZE;
+        let target_start = block_num * BLOCKSIZE;
+        let target_end = target_start + BLOCKSIZE;
+
+        let target = oracle.encrypt(&pad)?.bytes();
 
         for b in 0..=255 {
-            let mut prefix_bytes = prefix.bytes();
-            prefix_bytes.push(b);
+            let mut bytes = pad.bytes();
+            bytes.append(&mut decrypted.to_vec());
+            bytes.push(b);
 
-            let prefix = ByteArray::from_bytes(prefix_bytes);
-            let result = oracle.encrypt(&prefix, i)?.bytes();
+            let input = ByteArray::from_bytes(bytes);
+            let result = oracle.encrypt(&input)?.bytes();
 
-            if result[0..(BLOCKSIZE as usize)] == target[0..(BLOCKSIZE as usize)] {
+            if result[target_start..target_end] == target[target_start..target_end] {
                 decrypted.push(b);
+                break;
             }
         }
     }
@@ -435,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crack_ecb() {
+    fn test_crack_ecb_unprefixed() {
         let data = ByteArray::from_base64("Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkgaGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBqdXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUgYnkK").unwrap();
         let oracle = Oracle::new(&data);
         let decrypted = crack_ecb(&oracle).unwrap().string();
@@ -447,11 +460,11 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_prefix_size() {
+    fn test_detect_prefix_len() {
         let data = ByteArray::from_string("hello world");
         let oracle = Oracle::new_prefixed(&data, 7);
 
-        let size = detect_prefix_size(&oracle).unwrap();
+        let size = detect_prefix_len(&oracle).unwrap();
         assert_eq!(size, 7);
     }
 
