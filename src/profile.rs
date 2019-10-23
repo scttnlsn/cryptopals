@@ -1,17 +1,16 @@
 use crate::aes;
 use crate::encoding::ByteArray;
-use openssl::error::{ErrorStack};
 
 fn profile_for(email: &str) -> String {
     format!("email={}&uid=123&role=user", email.replace("&", "").replace("=", ""))
 }
 
-fn encrypt_profile(profile: &str, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+fn encrypt_profile(profile: &str, key: &[u8]) -> Result<ByteArray, aes::Error> {
     let data = ByteArray::from_string(profile);
     aes::encrypt_ecb(&data, &key)
 }
 
-fn decrypt_profile(encrypted: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+fn decrypt_profile(encrypted: &ByteArray, key: &[u8]) -> Result<ByteArray, aes::Error> {
     aes::decrypt_ecb(encrypted, &key)
 }
 

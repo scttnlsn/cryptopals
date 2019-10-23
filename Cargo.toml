@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 base64 = "0.10.1"
+failure = "0.1.6"
 itertools = "0.8"
 openssl = "0.10.24"
 rand = "0.7.2"

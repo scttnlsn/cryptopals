@@ -9,9 +9,25 @@ use rand::Rng;
 const BLOCKSIZE: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
-enum EncType {
+enum EncMode {
     ECB,
     CBC,
+}
+
+#[derive(Debug, Fail)]
+pub enum Error {
+    #[fail(display = "decryption error: {}", error)]
+    DecryptionError {
+        error: ErrorStack,
+    },
+    #[fail(display = "invalid padding")]
+    PaddingError,
+}
+
+impl From<ErrorStack> for Error {
+    fn from(error: ErrorStack) -> Error {
+        Error::DecryptionError { error: error }
+    }
 }
 
 pub fn pkcs7_pad(byte_array: &ByteArray, blocksize: usize) -> ByteArray {
@@ -22,29 +38,28 @@ pub fn pkcs7_pad(byte_array: &ByteArray, blocksize: usize) -> ByteArray {
     ByteArray::from_bytes(bytes)
 }
 
-// TODO: this should return a Result instead
-pub fn pkcs7_unpad(byte_array: &ByteArray) -> Option<ByteArray> {
+pub fn pkcs7_unpad(byte_array: &ByteArray) -> Result<ByteArray, Error> {
     let bytes = byte_array.bytes();
 
     match bytes.last() {
         Some(padding_len) => {
             if *padding_len == 0 {
-                return None;
+                return Err(Error::PaddingError);
             }
             let padding: Vec<&u8> = bytes.iter().rev().take(*padding_len as usize).collect();
             if !padding.iter().all(|x| *x == padding_len) {
-                return None;
+                return Err(Error::PaddingError);
             }
 
-            Some(ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec()))
+            Ok(ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec()))
         },
         None => {
-            Some(ByteArray::from_bytes(vec![]))
+            Ok(ByteArray::from_bytes(vec![]))
         }
     }
 }
 
-fn ecb_cipher(mode: Mode, key: &[u8], data: &[u8]) -> Result<ByteArray, ErrorStack> {
+fn ecb_cipher(mode: Mode, key: &[u8], data: &[u8]) -> Result<ByteArray, Error> {
     let ecb = symm::Cipher::aes_128_ecb();
 
     let mut crypter = Crypter::new(ecb, mode, key, None)?;
@@ -58,21 +73,18 @@ fn ecb_cipher(mode: Mode, key: &[u8], data: &[u8]) -> Result<ByteArray, ErrorSta
     Ok(ByteArray::from_bytes(out))
 }
 
-pub fn encrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+pub fn encrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, Error> {
     let padded = pkcs7_pad(data, BLOCKSIZE);
     let bytes = ecb_cipher(Mode::Encrypt, key, &padded.bytes())?;
     Ok(bytes)
 }
 
-pub fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, ErrorStack> {
+pub fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, Error> {
     let bytes = ecb_cipher(Mode::Decrypt, key, &data.bytes())?;
-    match pkcs7_unpad(&bytes) {
-        Some(unpadded) => Ok(unpadded),
-        None => Ok(bytes),
-    }
+    pkcs7_unpad(&bytes)
 }
 
-pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
+pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, Error> {
     let mut iv = iv;
     let mut output: Vec<u8> = Vec::new();
 
@@ -85,7 +97,7 @@ pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteAr
     Ok(ByteArray::from_bytes(output))
 }
 
-pub fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, ErrorStack> {
+pub fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, Error> {
     let mut iv = iv;
     let mut output: Vec<u8> = Vec::new();
 
@@ -112,23 +124,19 @@ impl CBC {
         }
     }
 
-    pub fn encrypt(&self, data: &ByteArray) -> Result<ByteArray, ErrorStack> {
+    pub fn encrypt(&self, data: &ByteArray) -> Result<ByteArray, Error> {
         let padded = pkcs7_pad(&data, BLOCKSIZE);
         encrypt_cbc(&padded, &self.key, ByteArray::from_bytes(self.iv.to_vec()))
     }
 
-    pub fn decrypt(&self, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack> {
+    pub fn decrypt(&self, ciphertext: &ByteArray) -> Result<ByteArray, Error> {
         let data = decrypt_cbc(&ciphertext, &self.key, ByteArray::from_bytes(self.iv.to_vec()))?;
-
-        match pkcs7_unpad(&data) {
-            Some(unpadded) => Ok(unpadded),
-            None => Ok(data),
-        }
+        pkcs7_unpad(&data)
     }
 
-    pub fn check_padding(&self, ciphertext: &ByteArray) -> Result<bool, ErrorStack> {
+    pub fn check_padding(&self, ciphertext: &ByteArray) -> Result<bool, Error> {
         let data = decrypt_cbc(&ciphertext, &self.key, ByteArray::from_bytes(self.iv.to_vec()))?;
-        Ok(pkcs7_unpad(&data).is_some())
+        Ok(pkcs7_unpad(&data).is_ok())
     }
 }
 
@@ -140,7 +148,7 @@ pub fn random_key() -> Vec<u8> {
     random_bytes(BLOCKSIZE)
 }
 
-fn random_encrypt(data: &ByteArray) -> Result<ByteArray, ErrorStack> {
+fn random_encrypt(data: &ByteArray) -> Result<ByteArray, Error> {
     let n = rand::thread_rng().gen_range(5, 11);
     let mut prefix = random_bytes(n);
     let mut suffix = random_bytes(n);
@@ -171,7 +179,7 @@ fn unique_blocks(data: &ByteArray) -> usize {
     uniques
 }
 
-fn detection_oracle(data: &ByteArray) -> EncType {
+fn detection_oracle(data: &ByteArray) -> EncMode {
     let bytes = data.bytes();
     let num_blocks = (data.len() / BLOCKSIZE as usize) as u32;
 
@@ -183,11 +191,11 @@ fn detection_oracle(data: &ByteArray) -> EncType {
         let duplicates = num_blocks as i32 - uniques;
 
         if duplicates > 0 {
-            return EncType::ECB;
+            return EncMode::ECB;
         }
     }
 
-    EncType::CBC
+    EncMode::CBC
 }
 
 #[derive(Debug)]
@@ -214,7 +222,7 @@ impl<'a> Oracle<'a> {
         }
     }
 
-    pub fn encrypt(&self, input: &ByteArray) -> Result<ByteArray, ErrorStack> {
+    pub fn encrypt(&self, input: &ByteArray) -> Result<ByteArray, Error> {
         encrypt_ecb(
             &self.data.prefix(&input.prefix(&self.prefix)),
             &self.key
@@ -222,7 +230,7 @@ impl<'a> Oracle<'a> {
     }
 }
 
-fn detect_blocksize(data: &ByteArray) -> Result<Option<usize>, ErrorStack> {
+fn detect_blocksize(data: &ByteArray) -> Result<Option<usize>, Error> {
     let oracle = Oracle::new(data);
 
     for i in 1..20 {
@@ -240,7 +248,7 @@ fn detect_blocksize(data: &ByteArray) -> Result<Option<usize>, ErrorStack> {
     Ok(None)
 }
 
-fn detect_data_len(oracle: &Oracle) -> Result<usize, ErrorStack> {
+fn detect_data_len(oracle: &Oracle) -> Result<usize, Error> {
     let base_length = oracle.encrypt(&ByteArray::from_bytes(vec![]))?.bytes().len();
     let mut i = 1;
 
@@ -257,7 +265,7 @@ fn detect_data_len(oracle: &Oracle) -> Result<usize, ErrorStack> {
     }
 }
 
-pub fn detect_prefix_len(oracle: &Oracle) -> Result<usize, ErrorStack> {
+pub fn detect_prefix_len(oracle: &Oracle) -> Result<usize, Error> {
     for i in 0..BLOCKSIZE {
         let input1 = ByteArray::from_bytes(vec![b'A'; i as usize]);
         let input2 = ByteArray::from_bytes(vec![b'A'; (i + 1) as usize]);
@@ -275,7 +283,7 @@ pub fn detect_prefix_len(oracle: &Oracle) -> Result<usize, ErrorStack> {
     Ok(0)
 }
 
-pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, ErrorStack> {
+pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, Error> {
     let data_len = detect_data_len(&oracle)?;
     let prefix_len = detect_prefix_len(&oracle)?;
 
@@ -312,7 +320,7 @@ pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, ErrorStack> {
     Ok(ByteArray::from_bytes(decrypted))
 }
 
-fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack> {
+fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, Error> {
     let mut decrypted: Vec<u8> = Vec::new();
 
     let bytes = ciphertext.bytes();
@@ -377,10 +385,7 @@ fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack>
     }
 
     let result = ByteArray::from_bytes(decrypted);
-    match pkcs7_unpad(&result) {
-        Some(unpadded) => Ok(unpadded),
-        None => Ok(result),
-    }
+    pkcs7_unpad(&result)
 }
 
 #[derive(Debug, PartialEq)]
@@ -400,7 +405,7 @@ impl<'a> UserData<'a> {
         }
     }
 
-    pub fn decrypt(ciphertext: &ByteArray, cbc: &'a CBC) -> Result<Self, ErrorStack> {
+    pub fn decrypt(ciphertext: &ByteArray, cbc: &'a CBC) -> Result<Self, Error> {
         let data = cbc.decrypt(ciphertext)?;
 
         Ok(UserData {
@@ -409,7 +414,7 @@ impl<'a> UserData<'a> {
         })
     }
 
-    pub fn encrypt(&self) -> Result<ByteArray, ErrorStack> {
+    pub fn encrypt(&self) -> Result<ByteArray, Error> {
         let data = ByteArray::from_string(&self.data);
         self.cbc.encrypt(&data)
     }
@@ -439,11 +444,11 @@ mod tests {
 
         let s = ByteArray::from_string("YELLOW SUB\x06\x06\x06\x06\x06\x05");
         let res = pkcs7_unpad(&s);
-        assert_eq!(res, None);
+        assert!(res.is_err());
 
         let s = ByteArray::from_string("YELLOW SUBMARIN\x02");
         let res = pkcs7_unpad(&s);
-        assert_eq!(res, None);
+        assert!(res.is_err());
 
         let s = ByteArray::from_string("YELLOW SUBMARI\x01\x01");
         let res = pkcs7_unpad(&s).unwrap();
@@ -522,11 +527,11 @@ mod tests {
         let key = "YELLOW SUBMARINE".as_bytes();
 
         let ecb = encrypt_ecb(&data, key).unwrap();
-        assert_eq!(detection_oracle(&ecb), EncType::ECB);
+        assert_eq!(detection_oracle(&ecb), EncMode::ECB);
 
         let iv = ByteArray::from_bytes(random_key());
         let cbc = encrypt_cbc(&data, key, iv).unwrap();
-        assert_eq!(detection_oracle(&cbc), EncType::CBC);
+        assert_eq!(detection_oracle(&cbc), EncMode::CBC);
     }
 
     #[test]
