@@ -22,14 +22,18 @@ pub fn pkcs7_pad(byte_array: &ByteArray, blocksize: usize) -> ByteArray {
     ByteArray::from_bytes(bytes)
 }
 
+// TODO: this should return a Result instead
 pub fn pkcs7_unpad(byte_array: &ByteArray) -> Option<ByteArray> {
     let bytes = byte_array.bytes();
 
     match bytes.last() {
         Some(padding_len) => {
+            if *padding_len == 0 {
+                return None;
+            }
             let padding: Vec<&u8> = bytes.iter().rev().take(*padding_len as usize).collect();
             if !padding.iter().all(|x| *x == padding_len) {
-                return None
+                return None;
             }
 
             Some(ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec()))
@@ -312,7 +316,10 @@ fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack>
     let mut decrypted: Vec<u8> = Vec::new();
 
     let bytes = ciphertext.bytes();
-    let blocks: Vec<&[u8]> = bytes.chunks(BLOCKSIZE).collect();
+    let mut blocks: Vec<&[u8]> = bytes.chunks(BLOCKSIZE).collect();
+
+    // assume the attacker has the CBC IV
+    blocks.insert(0, &cbc.iv);
 
     for blocks in blocks.windows(2) {
         let mut decrypted_block: Vec<u8> = Vec::new();
@@ -327,19 +334,23 @@ fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack>
         // c2 must be the last block since it has valid padding w/o modification
         let last_block = valid_padding;
 
-        if last_block {
-            // TODO: not sure how to handle this yet
-            break;
-        }
+        let mut pad_val = 0;
 
+        // n=1 means we're cracking the rightmost byte of a block
+        // n=2 means we're cracking the 2nd rightmost byte of a block
+        // etc.
         for n in 1..=(BLOCKSIZE) {
-            for i in 0..=255 {
+            for i in 1..=255 {
+                if i == n && !(last_block && i == pad_val) {
+                    continue;
+                }
+
                 let mut pad_bytes = vec![0 as u8; BLOCKSIZE - n];
                 pad_bytes.extend(vec![n as u8; n]);
                 let pad_mask = ByteArray::from_bytes(pad_bytes);
 
                 let mut val_bytes = vec![0 as u8; BLOCKSIZE - n];
-                val_bytes.push(i);
+                val_bytes.push(i as u8);
                 val_bytes.extend(decrypted_block.to_vec());
                 let val_mask = ByteArray::from_bytes(val_bytes);
 
@@ -350,7 +361,13 @@ fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack>
 
                 let valid_padding = cbc.check_padding(&ByteArray::from_bytes(bytes))?;
                 if valid_padding {
-                    decrypted_block.insert(0, i);
+                    decrypted_block.insert(0, i as u8);
+
+                    if last_block && n == 1 {
+                        // last byte of last block must be pad value
+                        pad_val = i;
+                    }
+
                     break;
                 }
             }
@@ -359,7 +376,11 @@ fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, ErrorStack>
         decrypted.extend(decrypted_block);
     }
 
-    Ok(ByteArray::from_bytes(decrypted))
+    let result = ByteArray::from_bytes(decrypted);
+    match pkcs7_unpad(&result) {
+        Some(unpadded) => Ok(unpadded),
+        None => Ok(result),
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -598,10 +619,25 @@ mod tests {
     #[test]
     fn test_crack_cbc() {
         let cbc = CBC::new();
-        let input = ByteArray::from_string("AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDDX");
-        let ciphertext = cbc.encrypt(&input).unwrap();
-        let plaintext = crack_cbc(&cbc, &ciphertext).unwrap().string();
 
-        println!("{:?}", plaintext);
+        let test_inputs = vec![
+            "MDAwMDAwTm93IHRoYXQgdGhlIHBhcnR5IGlzIGp1bXBpbmc=",
+            "MDAwMDAxV2l0aCB0aGUgYmFzcyBraWNrZWQgaW4gYW5kIHRoZSBWZWdhJ3MgYXJlIHB1bXBpbic=",
+            "MDAwMDAyUXVpY2sgdG8gdGhlIHBvaW50LCB0byB0aGUgcG9pbnQsIG5vIGZha2luZw==",
+            "MDAwMDAzQ29va2luZyBNQydzIGxpa2UgYSBwb3VuZCBvZiBiYWNvbg==",
+            "MDAwMDA0QnVybmluZyAnZW0sIGlmIHlvdSBhaW4ndCBxdWljayBhbmQgbmltYmxl",
+            "MDAwMDA1SSBnbyBjcmF6eSB3aGVuIEkgaGVhciBhIGN5bWJhbA==",
+            "MDAwMDA2QW5kIGEgaGlnaCBoYXQgd2l0aCBhIHNvdXBlZCB1cCB0ZW1wbw==",
+            "MDAwMDA3SSdtIG9uIGEgcm9sbCwgaXQncyB0aW1lIHRvIGdvIHNvbG8=",
+            "MDAwMDA4b2xsaW4nIGluIG15IGZpdmUgcG9pbnQgb2g=",
+            "MDAwMDA5aXRoIG15IHJhZy10b3AgZG93biBzbyBteSBoYWlyIGNhbiBibG93"
+        ];
+
+        for test in test_inputs {
+            let input = ByteArray::from_base64(test).unwrap();
+            let ciphertext = cbc.encrypt(&input).unwrap();
+            let plaintext = crack_cbc(&cbc, &ciphertext).unwrap().string();
+            assert_eq!(plaintext, input.string());
+        }
     }
 }
