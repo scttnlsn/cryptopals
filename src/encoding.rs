@@ -19,19 +19,19 @@ impl ByteArray {
     }
 
     pub fn from_hex(hex: &str) -> Option<ByteArray> {
-        let maybe_chars: Vec<Option<u32>> = hex
+        let maybe_chars = hex
             .chars()
             .map(|c| c.to_digit(16))
-            .collect();
+            .collect::<Vec<Option<u32>>>();
 
         if maybe_chars.iter().any(|x| x.is_none()) {
             return None;
         }
 
-        let chars: Vec<u8> = maybe_chars
+        let chars = maybe_chars
             .iter()
             .map(|c| c.unwrap() as u8)
-            .collect();
+            .collect::<Vec<u8>>();
 
         let bytes = chars
             .chunks(2)
@@ -107,8 +107,8 @@ impl ByteArray {
                 (triple & 0x00003F) as usize
             ];
 
-            let mut chars: Vec<char> = bytes.into_iter().map(|val| char_table[val] as char).collect();
-            result.append(&mut chars);
+            let chars: Vec<char> = bytes.into_iter().map(|val| char_table[val] as char).collect();
+            result.extend(chars);
         }
 
         result.iter().collect()
@@ -135,7 +135,7 @@ impl ByteArray {
 
     pub fn prefix(&self, prefix: &ByteArray) -> ByteArray {
         let mut bytes = prefix.bytes();
-        bytes.append(&mut self.bytes());
+        bytes.extend(self.bytes());
         ByteArray::from_bytes(bytes)
     }
 }

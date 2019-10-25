@@ -4,7 +4,6 @@ use openssl::error::{ErrorStack};
 use openssl::symm;
 use openssl::symm::{Mode, Crypter};
 use rand;
-use rand::Rng;
 
 const BLOCKSIZE: usize = 16;
 
@@ -32,9 +31,8 @@ impl From<ErrorStack> for Error {
 
 pub fn pkcs7_pad(byte_array: &ByteArray, blocksize: usize) -> ByteArray {
     let len = blocksize as usize - (byte_array.bytes().len() % blocksize as usize);
-    let mut padding = vec![len as u8; len];
     let mut bytes = byte_array.bytes().clone();
-    bytes.append(&mut padding);
+    bytes.extend(vec![len as u8; len]);
     ByteArray::from_bytes(bytes)
 }
 
@@ -46,12 +44,19 @@ pub fn pkcs7_unpad(byte_array: &ByteArray) -> Result<ByteArray, Error> {
             if *padding_len == 0 {
                 return Err(Error::PaddingError);
             }
-            let padding: Vec<&u8> = bytes.iter().rev().take(*padding_len as usize).collect();
+
+            let padding = bytes
+                .iter()
+                .rev()
+                .take(*padding_len as usize)
+                .collect::<Vec<&u8>>();
+
             if !padding.iter().all(|x| *x == padding_len) {
                 return Err(Error::PaddingError);
             }
 
-            Ok(ByteArray::from_bytes(bytes[0..(bytes.len() - *padding_len as usize)].to_vec()))
+            let unpadded = bytes[0..(bytes.len() - *padding_len as usize)].to_vec();
+            Ok(ByteArray::from_bytes(unpadded))
         },
         None => {
             Ok(ByteArray::from_bytes(vec![]))
@@ -86,11 +91,11 @@ pub fn decrypt_ecb(data: &ByteArray, key: &[u8]) -> Result<ByteArray, Error> {
 
 pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, Error> {
     let mut iv = iv;
-    let mut output: Vec<u8> = Vec::new();
+    let mut output = Vec::new();
 
     for block in data.bytes().chunks(16).map(|bytes| ByteArray::from_bytes(bytes.to_vec())) {
         let res = ecb_cipher(Mode::Decrypt, key, &block.bytes())?;
-        output.append(&mut res.xor(&iv).bytes());
+        output.extend(res.xor(&iv).bytes());
         iv = block;
     }
 
@@ -99,11 +104,11 @@ pub fn decrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteAr
 
 pub fn encrypt_cbc(data: &ByteArray, key: &[u8], iv: ByteArray) -> Result<ByteArray, Error> {
     let mut iv = iv;
-    let mut output: Vec<u8> = Vec::new();
+    let mut output = Vec::new();
 
     for block in data.bytes().chunks(16).map(|bytes| ByteArray::from_bytes(bytes.to_vec())) {
         let res = ecb_cipher(Mode::Encrypt, key, &block.xor(&iv).bytes())?;
-        output.append(&mut res.bytes());
+        output.extend(res.bytes());
         iv = res;
     }
 
@@ -148,30 +153,6 @@ pub fn random_key() -> Vec<u8> {
     random_bytes(BLOCKSIZE)
 }
 
-fn random_encrypt(data: &ByteArray) -> Result<ByteArray, Error> {
-    let n = rand::thread_rng().gen_range(5, 11);
-    let mut prefix = random_bytes(n);
-    let mut suffix = random_bytes(n);
-
-    let mut input: Vec<u8> = Vec::new();
-    input.append(&mut prefix);
-    input.append(&mut data.bytes().clone());
-    input.append(&mut suffix);
-
-    let decrypted = ByteArray::from_bytes(input);
-    let padded = pkcs7_pad(&decrypted, BLOCKSIZE);
-    let key = random_key();
-
-    if rand::random() {
-        // ECB
-        encrypt_ecb(&padded, &key)
-    } else {
-        // CBC
-        let iv = ByteArray::from_bytes(random_key());
-        encrypt_cbc(&padded, &key, iv)
-    }
-}
-
 fn unique_blocks(data: &ByteArray) -> usize {
     let bytes = data.bytes();
     let blocks = bytes.chunks(BLOCKSIZE as usize);
@@ -179,7 +160,7 @@ fn unique_blocks(data: &ByteArray) -> usize {
     uniques
 }
 
-fn detection_oracle(data: &ByteArray) -> EncMode {
+fn detect_mode(data: &ByteArray) -> EncMode {
     let bytes = data.bytes();
     let num_blocks = (data.len() / BLOCKSIZE as usize) as u32;
 
@@ -304,7 +285,7 @@ pub fn crack_ecb(oracle: &Oracle) -> Result<ByteArray, Error> {
 
         for b in 0..=255 {
             let mut bytes = pad.bytes();
-            bytes.append(&mut decrypted.to_vec());
+            bytes.extend(decrypted.to_vec());
             bytes.push(b);
 
             let input = ByteArray::from_bytes(bytes);
@@ -348,7 +329,7 @@ fn crack_cbc(cbc: &CBC, ciphertext: &ByteArray) -> Result<ByteArray, Error> {
         // n=2 means we're cracking the 2nd rightmost byte of a block
         // etc.
         for n in 1..=(BLOCKSIZE) {
-            for i in 1..=255 {
+            for i in 0..=255 {
                 if i == n && !(last_block && i == pad_val) {
                     continue;
                 }
@@ -450,6 +431,10 @@ mod tests {
         let res = pkcs7_unpad(&s);
         assert!(res.is_err());
 
+        let s = ByteArray::from_string("YELLOW SUBMARIN\x00");
+        let res = pkcs7_unpad(&s);
+        assert!(res.is_err());
+
         let s = ByteArray::from_string("YELLOW SUBMARI\x01\x01");
         let res = pkcs7_unpad(&s).unwrap();
         assert_eq!(res.string(), "YELLOW SUBMARI\x01");
@@ -515,23 +500,16 @@ mod tests {
     }
 
     #[test]
-    fn test_random_encrypt() {
-        let data = ByteArray::from_string("YELLOW SUBMARINE");
-        let result = random_encrypt(&data).unwrap();
-        assert_eq!(result.bytes().len() % 16, 0);
-    }
-
-    #[test]
-    fn test_detection_oracle() {
+    fn test_detect_mode() {
         let data = ByteArray::from_string("YELLOW SUBMARINEYELLOW SUBMARINE");
         let key = "YELLOW SUBMARINE".as_bytes();
 
         let ecb = encrypt_ecb(&data, key).unwrap();
-        assert_eq!(detection_oracle(&ecb), EncMode::ECB);
+        assert_eq!(detect_mode(&ecb), EncMode::ECB);
 
         let iv = ByteArray::from_bytes(random_key());
         let cbc = encrypt_cbc(&data, key, iv).unwrap();
-        assert_eq!(detection_oracle(&cbc), EncMode::CBC);
+        assert_eq!(detect_mode(&cbc), EncMode::CBC);
     }
 
     #[test]
@@ -599,7 +577,7 @@ mod tests {
         let mut bytes = padding.bytes();
 
         // xor the data w/ mask (this will be reversed when decrypting)
-        bytes.append(&mut data.xor(&mask).bytes());
+        bytes.extend(data.xor(&mask).bytes());
 
         let input = ByteArray::from_bytes(bytes);
 

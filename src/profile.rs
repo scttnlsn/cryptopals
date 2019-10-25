@@ -47,10 +47,10 @@ mod tests {
 
         // results in padded "admin" being the 2nd block
         let profile2 = profile_for("xxxxxxxxxxadmin\x0B\x0B\x0B\x0B\x0B\x0B\x0B\x0B\x0B\x0B\x0B");
-        let mut encrypted_profile2 = encrypt_profile(&profile2, &key).unwrap().bytes();
+        let encrypted_profile2 = encrypt_profile(&profile2, &key).unwrap().bytes();
 
         let mut ciphertext = encrypted_profile1[0..32].to_vec();
-        ciphertext.append(&mut encrypted_profile2[16..32].to_vec());
+        ciphertext.extend(encrypted_profile2[16..32].to_vec());
 
         let encrypted_admin = ByteArray::from_bytes(ciphertext);
         let decrypted_admin = decrypt_profile(&encrypted_admin, &key).unwrap();
