@@ -153,6 +153,53 @@ pub fn random_key() -> Vec<u8> {
     random_bytes(BLOCKSIZE)
 }
 
+struct CTR {
+    key: Vec<u8>,
+    nonce: Vec<u8>,
+}
+
+impl CTR {
+    pub fn new(key: Vec<u8>, nonce: Vec<u8>) -> Self {
+        Self {
+            key: key,
+            nonce: nonce,
+        }
+    }
+
+    pub fn cipher(&self, data: &ByteArray) -> Result<ByteArray, Error> {
+        let mut output = Vec::new();
+
+        let bytes = data.bytes();
+        let blocks = bytes
+            .chunks(BLOCKSIZE)
+            .map(|bytes| bytes.to_vec())
+            .map(ByteArray::from_bytes);
+
+        for (counter, block) in blocks.enumerate() {
+            let nonce_bytes = self.nonce_bytes(counter as u32);
+            let ciphered = ecb_cipher(Mode::Encrypt, &self.key, &nonce_bytes)?;
+            output.extend(block.xor(&ciphered).bytes());
+        }
+
+        Ok(ByteArray::from_bytes(output))
+    }
+
+    fn nonce_bytes(&self, counter: u32) -> Vec<u8> {
+        let mut bytes = self.nonce.to_vec();
+
+        // counter in little-endian byte order
+        bytes.push(((counter & 0x000000FF) >> 0) as u8);
+        bytes.push(((counter & 0x0000FF00) >> 1) as u8);
+        bytes.push(((counter & 0x00FF0000) >> 2) as u8);
+        bytes.push(((counter & 0xFF000000) >> 3) as u8);
+
+        // since counter is only a u32
+        bytes.extend(vec![0, 0, 0, 0]);
+
+        bytes
+    }
+}
+
 fn unique_blocks(data: &ByteArray) -> usize {
     let bytes = data.bytes();
     let blocks = bytes.chunks(BLOCKSIZE as usize);
@@ -622,5 +669,22 @@ mod tests {
             let plaintext = crack_cbc(&cbc, &ciphertext).unwrap().string();
             assert_eq!(plaintext, input.string());
         }
+    }
+
+    #[test]
+    fn test_ctr_cipher() {
+        let ctr = CTR::new(random_key(), random_bytes(8));
+        let plaintext = ByteArray::from_string("testing");
+        let ciphertext = ctr.cipher(&plaintext).unwrap();
+
+        let res = ctr.cipher(&ciphertext).unwrap();
+        assert_eq!(res.string(), "testing");
+
+        let key = "YELLOW SUBMARINE".as_bytes().to_vec();
+        let ctr = CTR::new(key, vec![0; 8]);
+        let ciphertext = ByteArray::from_base64("L77na/nrFsKvynd6HzOoG7GHTLXsTVu9qvY/2syLXzhPweyyMTJULu/6/kXX0KSvoOLSFQ==").unwrap();
+        let plaintext = ctr.cipher(&ciphertext).unwrap();
+
+        assert_eq!(plaintext.string(), "Yo, VIP Let's kick it Ice, Ice, baby Ice, Ice, baby ");
     }
 }
