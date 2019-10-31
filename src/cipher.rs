@@ -10,7 +10,7 @@ pub struct Score<'a> {
     score: f64,
 }
 
-fn letter_freq(c: char) -> f64 {
+pub fn letter_freq(c: char) -> f64 {
     match c {
         'a' => 8.167,
         'b' => 1.492,

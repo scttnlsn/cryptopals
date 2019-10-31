@@ -2,6 +2,7 @@
 
 mod aes;
 mod cipher;
+mod ctr;
 mod encoding;
 mod profile;
 
