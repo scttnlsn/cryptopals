@@ -45,8 +45,7 @@ pub fn letter_freq(c: char) -> f64 {
 
 fn english_score(s: &str) -> f64 {
     let sum_squares: f64 = s.chars().map(|c| {
-        let lower = c.to_lowercase().collect::<Vec<_>>()[0];
-        letter_freq(lower).powi(2)
+        letter_freq(c.to_ascii_lowercase()).powi(2)
     }).sum();
 
     sum_squares.sqrt()
@@ -70,30 +69,27 @@ pub fn find_key(encrypted: &ByteArray) -> Score {
     scores[0].clone()
 }
 
-pub fn encrypt(decrypted: &str, key: &str) -> ByteArray {
+pub fn encrypt(decrypted: &ByteArray, key: &str) -> ByteArray {
     let repeats = decrypted.len() / key.len() + 1;
     let mut key = key.repeat(repeats);
     key.truncate(decrypted.len());
 
-    let a = ByteArray::from_string(&decrypted);
-    let b = ByteArray::from_string(&key);
-
-    a.xor(&b)
+    decrypted.xor(&ByteArray::from_string(&key))
 }
 
-pub fn keysize(ciphertext: &str) -> u32 {
+pub fn keysize(ciphertext: &ByteArray) -> usize {
     let mut results: Vec<(usize, f64)> = (2..=40).map(|size| {
-        let chunks: Vec<&str> = ciphertext
-            .as_bytes()
+        let chunks: Vec<Vec<u8>> = ciphertext
+            .bytes()
             .chunks(size)
+            .map(|chunk| chunk.to_vec())
             .take(4)
-            .map(|chunk| str::from_utf8(chunk).unwrap())
             .collect();
 
-        let a = ByteArray::from_string(chunks[0]);
-        let b = ByteArray::from_string(chunks[1]);
-        let c = ByteArray::from_string(chunks[2]);
-        let d = ByteArray::from_string(chunks[3]);
+        let a = ByteArray::from_bytes(chunks[0].to_vec());
+        let b = ByteArray::from_bytes(chunks[1].to_vec());
+        let c = ByteArray::from_bytes(chunks[2].to_vec());
+        let d = ByteArray::from_bytes(chunks[3].to_vec());
 
         let numer = (
             a.hamming_distance(&b)
@@ -112,33 +108,31 @@ pub fn keysize(ciphertext: &str) -> u32 {
         a.1.partial_cmp(&b.1).unwrap()
     });
 
-    results[0].0 as u32
+    results[0].0
 }
 
-pub fn find_key_of_size(ciphertext: &str, keysize: u32) -> ByteArray {
-    let chars: Vec<char> = ciphertext.chars().collect();
-    let blocks: Vec<&[char]> = chars.chunks(keysize as usize).collect();
+pub fn find_key_of_size(ciphertext: &ByteArray, keysize: usize) -> ByteArray {
+    let bytes = ciphertext.bytes();
+    let blocks: Vec<&[u8]> = bytes.chunks(keysize).collect();
 
     let mut key: Vec<u8> = Vec::new();
 
-    for i in 0..(keysize as usize) {
-        let mut transposed: Vec<char> = Vec::new();
+    for i in 0..keysize {
+        let mut transposed: Vec<u8> = Vec::new();
 
         for block in &blocks {
             if i < block.len() {
-                transposed.push(block[i] as char);
+                transposed.push(block[i]);
             }
         }
 
-        let transposed_string: String = transposed.iter().collect();
-        let transposed_byte_array = ByteArray::from_string(&transposed_string);
+        let transposed_block = ByteArray::from_bytes(transposed);
 
-        let score = find_key(&transposed_byte_array);
+        let score = find_key(&transposed_block);
         key.push(score.key.bytes()[0])
     }
 
-    let n = key.len() * blocks.len();
-    ByteArray::from_bytes(key.into_iter().cycle().take(n).collect())
+    ByteArray::from_bytes(key)
 }
 
 #[cfg(test)]
@@ -156,9 +150,9 @@ mod tests {
 
     #[test]
     fn test_encrypt() {
-        let decrypted = "Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal";
+        let decrypted = ByteArray::from_string("Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal");
         let key = "ICE";
-        let result = encrypt(decrypted, key).hex();
+        let result = encrypt(&decrypted, key).hex();
         assert_eq!(result, "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f");
     }
 
@@ -181,8 +175,7 @@ mod tests {
     #[test]
     fn test_break_repeating_key_xor() {
         let contents = fs::read_to_string("data/6.txt").unwrap();
-        let encrypted = ByteArray::from_base64(&contents.replace("\n", "")).unwrap();
-        let ciphertext = encrypted.string();
+        let ciphertext = ByteArray::from_base64(&contents.replace("\n", "")).unwrap();
         let size = keysize(&ciphertext);
         assert_eq!(size, 29);
 

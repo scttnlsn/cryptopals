@@ -50,7 +50,7 @@ impl CTR {
     }
 }
 
-fn crack_fixed_nonce(ciphertexts: &Vec<ByteArray>) -> Vec<ByteArray> {
+fn crack_fixed_nonce_subst(ciphertexts: &Vec<ByteArray>) -> Vec<ByteArray> {
     let n = ciphertexts.len();
     let mut results = Vec::new();
 
@@ -97,6 +97,52 @@ fn crack_fixed_nonce(ciphertexts: &Vec<ByteArray>) -> Vec<ByteArray> {
     results
 }
 
+fn crack_fixed_nonce_stat(ciphertexts: &Vec<ByteArray>) -> Vec<ByteArray> {
+    let ciphertext_bytes = ciphertexts.iter().map(|ciphertext| {
+        ciphertext.bytes()
+    }).collect::<Vec<Vec<u8>>>();
+
+    // find min length ciphertext
+    let mut min_length = std::usize::MAX;
+    for bytes in &ciphertext_bytes {
+        let n = bytes.len();
+        if n < min_length {
+            min_length = n;
+        }
+    }
+
+    // truncate all ciphertexts to min length
+    let truncated_ciphertext_bytes = ciphertext_bytes.iter().map(|bytes| {
+        bytes[0..min_length].to_vec()
+    }).collect::<Vec<Vec<u8>>>();
+
+    // combined them in to one long ciphertext
+    let combined_ciphertext_bytes = truncated_ciphertext_bytes
+        .to_vec()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
+
+    let combined_ciphertext = ByteArray::from_bytes(combined_ciphertext_bytes);
+
+    // find repeating key
+    let key = cipher::find_key_of_size(&combined_ciphertext, min_length);
+
+    let mut results: Vec<ByteArray> = Vec::new();
+    for bytes in &truncated_ciphertext_bytes {
+        let mut correction = vec![0; key.len()];
+        correction[0] = 0b00000111;
+
+        let plaintext = ByteArray::from_bytes(bytes.to_vec())
+            .xor(&key)
+            .xor(&ByteArray::from_bytes(correction));
+
+        results.push(plaintext);
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn test_break_fixed_nonce() {
+    fn test_break_fixed_nonce_subst() {
         let ctr = CTR::new(aes::random_key(), aes::random_bytes(8));
 
         let contents = fs::read_to_string("data/19.txt").unwrap();
@@ -133,9 +179,29 @@ mod tests {
             ctr.cipher(plaintext).unwrap()
         }).collect();
 
-        let results = crack_fixed_nonce(&ciphertexts);
+        let results = crack_fixed_nonce_subst(&ciphertexts);
 
         assert_eq!(results[0].string(), "i have met them at close of day");
         assert_eq!(results[1].string(), "coming with vivid faces");
+    }
+
+    #[test]
+    fn test_break_fixed_nonce_stat() {
+        let ctr = CTR::new(aes::random_key(), aes::random_bytes(8));
+
+        let contents = fs::read_to_string("data/20.txt").unwrap();
+
+        let plaintexts = contents.split("\n").filter(|line| line.len() > 0).map(|line| {
+            ByteArray::from_base64(line).unwrap()
+        }).collect::<Vec<ByteArray>>();
+
+        let ciphertexts: Vec<ByteArray> = plaintexts.iter().map(|plaintext| {
+            ctr.cipher(plaintext).unwrap()
+        }).collect();
+
+        let results = crack_fixed_nonce_stat(&ciphertexts);
+
+        assert_eq!(results[0].string(), "I'm rated \"R\"...this is a warning, ya better void / P");
+        assert_eq!(results[1].string(), "Cuz I came back to attack others in spite- / Strike l");
     }
 }
